@@ -1,6 +1,6 @@
 # Autolume Mac (Proof of Concept Stage)
 
-![Autolume Mac Interface](autolume_screenshot.png)
+![Autolume Mac Interface](gui.png)
 
 ## Prerequisites
 

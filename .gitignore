@@ -1,6 +1,5 @@
 libtorch
 *.pkl
-*.png
 *.wav
 *.mp4
 *.pt
