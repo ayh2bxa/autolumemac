@@ -11,14 +11,51 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     setSize (Constants::frameWidth*2, Constants::frameHeight);
     startTimerHz(Constants::fps);
 
+    // Setup upload button
+    uploadButton.setButtonText("Load Model...");
+    uploadButton.onClick = [this]() {
+        auto fileChooser = std::make_shared<juce::FileChooser>(
+            "Select TorchScript Model (.pt)",
+            juce::File(),
+            "*.pt"
+        );
+
+        auto chooserFlags = juce::FileBrowserComponent::openMode |
+                           juce::FileBrowserComponent::canSelectFiles;
+
+        fileChooser->launchAsync(chooserFlags, [this, fileChooser](const juce::FileChooser& fc) {
+            auto file = fc.getResult();
+            if (file != juce::File{}) {
+                std::string path = file.getFullPathName().toStdString();
+                bool success = processorRef.renderer.loadModel(path);
+
+                if (success) {
+                    modelPathLabel.setText(file.getFileName(), juce::dontSendNotification);
+                    noiseSlider.setEnabled(true);
+                } else {
+                    modelPathLabel.setText("Failed to load model", juce::dontSendNotification);
+                    noiseSlider.setEnabled(false);
+                }
+            }
+        });
+    };
+    addAndMakeVisible(uploadButton);
+
+    // Setup model path label
+    modelPathLabel.setText("No model loaded", juce::dontSendNotification);
+    modelPathLabel.setJustificationType(juce::Justification::centred);
+    modelPathLabel.setColour(juce::Label::textColourId, juce::Colours::lightgrey);
+    addAndMakeVisible(modelPathLabel);
+
     // Setup noise strength slider
     noiseSlider.setSliderStyle(juce::Slider::LinearVertical);
     noiseSlider.setRange(0.0, 1.0, 0.01);
     noiseSlider.setValue(0.0);
     noiseSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 80, 20);
     noiseSlider.onValueChange = [this]() {
-        processorRef.renderer.setNoiseStrength(static_cast<float>(noiseSlider.getValue()));
+        processorRef.renderer.setNoiseStrength(static_cast<float>(noiseSlider.getValue()/10.f));
     };
+    noiseSlider.setEnabled(false);  // Disabled until model is loaded
     addAndMakeVisible(noiseSlider);
 
     noiseLabel.setText("Noise Strength", juce::dontSendNotification);
@@ -49,16 +86,28 @@ void AudioPluginAudioProcessorEditor::resized()
     // Right half of the screen
     auto rightHalf = getLocalBounds().removeFromRight(Constants::frameWidth);
 
-    // Center the slider vertically in the right half, with some margin
+    int margin = 20;
+
+    // Upload button at the top
+    auto topArea = rightHalf.removeFromTop(80).reduced(margin);
+    auto buttonArea = topArea.removeFromTop(40);
+    uploadButton.setBounds(buttonArea);
+
+    // Model path label below button
+    topArea.removeFromTop(5);  // Small gap
+    auto modelLabelArea = topArea.removeFromTop(30);
+    modelPathLabel.setBounds(modelLabelArea);
+
+    // Center the slider vertically in the remaining space
     int sliderWidth = 60;
     int sliderHeight = 300;
-    int margin = 20;
 
     auto sliderArea = rightHalf.withSizeKeepingCentre(sliderWidth, sliderHeight);
     noiseSlider.setBounds(sliderArea);
 
-    // Label above the slider
-    auto labelArea = sliderArea.removeFromTop(30).translated(0, -40);
+    // Label above the slider - make it wider than slider to show full "Noise Strength" text
+    int labelWidth = 150;
+    auto labelArea = rightHalf.withSizeKeepingCentre(labelWidth, 30).translated(0, -sliderHeight/2 - 50);
     noiseLabel.setBounds(labelArea);
 }
 

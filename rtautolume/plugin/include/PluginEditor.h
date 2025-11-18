@@ -24,6 +24,10 @@ private:
     juce::Image image;
     array<uint8_t, Constants::frameBytes> frameData;
 
+    // Model loading
+    juce::TextButton uploadButton;
+    juce::Label modelPathLabel;
+
     // Noise strength control
     juce::Slider noiseSlider;
     juce::Label noiseLabel;

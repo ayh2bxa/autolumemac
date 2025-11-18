@@ -26,13 +26,21 @@ void Autolume::initialize() {
         return;
     }
 
-    std::cout << "Autolume: Starting deferred initialization..." << std::endl;
+    std::cout << "Autolume: Starting initialization (no model loaded yet)..." << std::endl;
+
+    // Just mark as initialized - model will be loaded later via loadModel()
+    isInitialized.store(true, std::memory_order_release);
+    std::cout << "Autolume: Ready for model loading" << std::endl;
+}
+
+bool Autolume::loadModel(const std::string& path) {
+    std::cout << "Autolume: Loading model from: " << path << std::endl;
 
     try {
         // Load model
-        std::cout << "Autolume: Loading model..." << std::endl;
-        model = torch::jit::load("/Users/anthonyhong/Desktop/self/code/autolume_/stylegan2_notrain.pt");
+        model = torch::jit::load(path);
         model.eval();
+        modelPath = path;
 
         // Prepare input tensor
         std::cout << "Autolume: Creating input tensor..." << std::endl;
@@ -44,20 +52,23 @@ void Autolume::initialize() {
         // Find and cache noise_strength parameters
         findNoiseStrengthParameters();
 
-        std::cout << "Autolume: Model initialized successfully" << std::endl;
+        std::cout << "Autolume: Model loaded successfully" << std::endl;
 
-        // Mark as initialized before starting thread
-        isInitialized.store(true, std::memory_order_release);
+        // Mark model as loaded
+        modelLoaded.store(true, std::memory_order_release);
 
-        // Start inference thread AFTER everything is initialized
-        shouldExit.store(false, std::memory_order_release);
-        inferenceThread = std::thread(&Autolume::inferenceThreadLoop, this);
+        // Start inference thread if not already running
+        if (!inferenceThread.joinable()) {
+            shouldExit.store(false, std::memory_order_release);
+            inferenceThread = std::thread(&Autolume::inferenceThreadLoop, this);
+            std::cout << "Autolume: Inference thread started" << std::endl;
+        }
 
-        std::cout << "Autolume: Inference thread started" << std::endl;
+        return true;
     }
     catch (const std::exception& e) {
-        std::cerr << "Autolume: ERROR during initialization: " << e.what() << std::endl;
-        // Don't start the thread if initialization failed
+        std::cerr << "Autolume: ERROR loading model: " << e.what() << std::endl;
+        return false;
     }
 }
 

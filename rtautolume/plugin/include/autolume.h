@@ -18,8 +18,14 @@ public:
     // Must be called after JUCE initialization (e.g., in prepareToPlay)
     void initialize();
 
+    // Load model from file path (called from GUI thread)
+    bool loadModel(const std::string& path);
+
     // Check if renderer is ready for use
-    bool isReady() const { return isInitialized.load(std::memory_order_acquire); }
+    bool isReady() const {
+        return isInitialized.load(std::memory_order_acquire) &&
+               modelLoaded.load(std::memory_order_acquire);
+    }
 
     void processAudio(float val);
 
@@ -45,6 +51,7 @@ private:
     torch::Device device{torch::kCPU};  // Start with CPU, switch to MPS on inference thread
     torch::Tensor inputTensor;
     vector<torch::jit::IValue> inputs;
+    std::string modelPath;  // Path to loaded model
 
     // Noise strength parameters (cached for real-time control)
     std::vector<torch::Tensor> noiseStrengthParams;
@@ -75,6 +82,7 @@ private:
     // Thread control
     atomic<bool> shouldExit{false};
     atomic<bool> isInitialized{false};
+    atomic<bool> modelLoaded{false};
     atomic<bool> mpsInitialized{false};
     atomic<bool> inferenceRunning{false};  // Prevent overlapping inference calls
     atomic<bool> inferenceRequested{false};  // Signal from GUI thread to inference thread
