@@ -6,3 +6,4 @@ libtorch
 *.pt
 *.pth
 build
+.venv
