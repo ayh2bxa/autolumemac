@@ -1,3 +1,7 @@
+# Autolume Mac (Proof of Concept Stage)
+
+![Autolume Mac Interface](autolume_screenshot.png)
+
 ## Prerequisites
 
 Before building this project, ensure you have the following installed:
