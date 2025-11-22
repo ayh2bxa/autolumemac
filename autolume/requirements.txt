@@ -22,6 +22,7 @@ imgui==1.4.1
 Jinja2==3.1.2
 joblib==1.3.2
 kiwisolver==1.4.5
+kmeans-pytorch==0.3
 kornia==0.7.0
 lazy_loader==0.3
 librosa==0.10.1
@@ -32,8 +33,8 @@ matplotlib==3.8.0
 moviepy==1.0.3
 mpmath==1.3.0
 msgpack==1.0.7
-# ndi-python==5.1.1.1
 networkx==3.0
+ninja==1.11.1.1
 numba==0.58.1
 numpy==1.24.1
 opencv-python==4.8.1.78
@@ -45,7 +46,6 @@ platformdirs==3.11.0
 pooch==1.7.0
 proglog==0.1.10
 psutil==5.9.6
-# PyAudio==0.2.13
 pycparser==2.21
 PyOpenGL==3.1.7
 pyparsing==3.1.1
@@ -66,6 +66,7 @@ sympy==1.12
 termcolor==2.3.0
 threadpoolctl==3.2.0
 tifffile==2023.9.26
+timm==0.5.4
 torch==2.0.1
 torchaudio==2.0.2
 torchvision==0.15.2
@@ -76,6 +77,3 @@ urllib3==1.26.13
 visualizer==0.0.10
 wcwidth==0.2.8
 wordcloud==1.9.2
-timm==0.5.4
-ninja==1.11.1.1
-kmeans-pytorch==0.3
