@@ -90,28 +90,11 @@ class TorchScriptStyleGAN2Wrapper:
 
         self.model.eval()
 
-    def _create_fresh_model(self) -> nn.Module:
-        """Create a fresh Custom StyleGAN2 synthesis network with audio processing"""
-        print("\n🆕 Creating fresh Custom StyleGAN2 synthesis network with audio processing...")
-
-        # Create full generator (needed for mapping network)
-        G = custom_stylegan2.Generator(
-            z_dim=512,
-            c_dim=0,
-            w_dim=self.w_dim,
-            img_resolution=self.img_resolution,
-            img_channels=3,
-            channel_base=32768,
-            channel_max=512
-        ).to(self.device)
-
-        synthesis = G.synthesis
-
-        # Apply patches for stability (same as offline_audio_inference.py)
-        self._apply_patches(synthesis)
-
-        # Wrap synthesis network to take raw audio samples and return image
-        # This integrates audio processing (FFT) into the model
+    def _create_audio_to_image_model(self, synthesis, generator=None) -> nn.Module:
+        """
+        Create AudioToImageModel wrapper that converts FFT magnitude to images.
+        Used by both fresh and pretrained model loading.
+        """
         class AudioToImageModel(nn.Module):
             def __init__(self, synthesis, generator=None):
                 super().__init__()
@@ -125,7 +108,8 @@ class TorchScriptStyleGAN2Wrapper:
                 # Generate base latent
                 if generator is not None:
                     # Use mapping network to generate a good base latent
-                    self.mapping = generator.mapping
+                    # Move mapping to device first
+                    self.mapping = generator.mapping.to(device)
                     with torch.no_grad():
                         z = torch.randn(1, generator.z_dim, device=device)
                         c = torch.zeros(1, generator.c_dim, device=device)
@@ -180,7 +164,30 @@ class TorchScriptStyleGAN2Wrapper:
                     return result[0]
                 return result
 
-        wrapped = AudioToImageModel(synthesis, G)
+        return AudioToImageModel(synthesis, generator)
+
+    def _create_fresh_model(self) -> nn.Module:
+        """Create a fresh Custom StyleGAN2 synthesis network with audio processing"""
+        print("\n🆕 Creating fresh Custom StyleGAN2 synthesis network with audio processing...")
+
+        # Create full generator (needed for mapping network)
+        G = custom_stylegan2.Generator(
+            z_dim=512,
+            c_dim=0,
+            w_dim=self.w_dim,
+            img_resolution=self.img_resolution,
+            img_channels=3,
+            channel_base=32768,
+            channel_max=512
+        ).to(self.device)
+
+        synthesis = G.synthesis
+
+        # Apply patches for stability (same as offline_audio_inference.py)
+        self._apply_patches(synthesis)
+
+        # Wrap synthesis network using shared AudioToImageModel
+        wrapped = self._create_audio_to_image_model(synthesis, G)
         wrapped.eval()
 
         print(f"   ✓ Created audio-to-image model with {self._count_parameters(synthesis):,} parameters")
@@ -241,73 +248,8 @@ class TorchScriptStyleGAN2Wrapper:
                 self.img_resolution = synthesis.img_resolution
                 print(f"   ✓ Using resolution from pretrained model: {self.img_resolution}")
 
-            # Wrap synthesis network with AudioToImageModel
-            class AudioToImageModel(nn.Module):
-                def __init__(self, synthesis, generator=None):
-                    super().__init__()
-                    self.synthesis = synthesis
-                    self.num_ws = synthesis.num_ws
-                    self.w_dim = synthesis.w_dim
-
-                    # Generate base latent
-                    if generator is not None:
-                        # Use mapping network to generate a good base latent
-                        self.mapping = generator.mapping
-                        with torch.no_grad():
-                            z = torch.randn(1, generator.z_dim)
-                            c = torch.zeros(1, generator.c_dim)
-                            base_w = self.mapping(z, c, truncation_psi=0.7)
-                        print("      Using mapping network for base latent (better quality)")
-                    else:
-                        # Fall back to random initialization
-                        base_w = torch.randn(1, synthesis.num_ws, synthesis.w_dim)
-                        print("      Using random base latent (generator not provided)")
-
-                    # Register base latent as buffer (will be part of model state)
-                    self.register_buffer('base_latent', base_w)
-
-                def forward(self, fft_magnitude):
-                    """
-                    Args:
-                        fft_magnitude: Pre-computed FFT magnitude [batch, 512] or [512]
-                                       (computed on CPU in C++ code)
-
-                    Returns:
-                        Generated image [batch, 3, H, W]
-                    """
-                    # Ensure input is 2D: [batch, 512]
-                    if fft_magnitude.dim() == 1:
-                        fft_magnitude = fft_magnitude.unsqueeze(0)
-
-                    batch_size = fft_magnitude.shape[0]
-
-                    # Take first 256 FFT bins (to match w_dim modulation)
-                    fft_features = fft_magnitude[:, :256]
-
-                    # Normalize FFT features to reasonable range (0-1)
-                    fft_features = fft_features / (fft_features.max(dim=1, keepdim=True)[0] + 1e-8)
-
-                    # Scale down to avoid too much deviation from base latent
-                    fft_features = (fft_features - 0.5) * 0.3  # Range: [-0.15, 0.15]
-
-                    # Modulate base latent with FFT features
-                    # base_latent: [1, num_ws, w_dim]
-                    # fft_features: [batch, 256]
-                    latent = self.base_latent.repeat(batch_size, 1, 1)  # [batch, num_ws, w_dim]
-
-                    # Apply FFT modulation to first 256 dimensions across all layers
-                    fft_mod = fft_features.unsqueeze(1)  # [batch, 1, 256]
-                    latent[:, :, :256] = latent[:, :, :256] + fft_mod
-
-                    # Generate image
-                    result = self.synthesis(latent, get_rgb_list=False)
-
-                    # Handle tuple return: (img, rgb_list)
-                    if isinstance(result, (tuple, list)):
-                        return result[0]
-                    return result
-
-            wrapped = AudioToImageModel(synthesis, G)
+            # Wrap synthesis network using shared AudioToImageModel
+            wrapped = self._create_audio_to_image_model(synthesis, G)
             wrapped.eval()
 
             print(f"   ✓ Loaded pretrained model with {self._count_parameters(synthesis):,} parameters")
