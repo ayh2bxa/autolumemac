@@ -133,6 +133,51 @@ class TorchScriptStyleGAN2Wrapper:
                 # Store step_y for seed calculation (matching Python GUI)
                 self.step_y = 100
 
+            def _deterministic_randn_from_seed(self, seed: torch.Tensor, dim: int, device) -> torch.Tensor:
+                """
+                Generate deterministic random normal tensor from seed using LCG + Box-Muller.
+                Fully traceable with pure PyTorch ops - no side effects.
+
+                Args:
+                    seed: Tensor containing integer seed value (scalar tensor)
+                    dim: Dimension of output
+                    device: Target device
+                """
+                # Linear Congruential Generator constants (from glibc)
+                a = torch.tensor(1103515245, dtype=torch.int64, device=device)
+                c = torch.tensor(12345, dtype=torch.int64, device=device)
+                m = torch.tensor(2**31, dtype=torch.int64, device=device)
+
+                # Initialize state from tensor seed (keep as tensor throughout)
+                state = seed.long()
+
+                # Box-Muller produces 2 values from 2 uniforms, so generate ceil(dim/2)*2 uniforms
+                num_pairs = (dim + 1) // 2
+                uniforms = []
+                for i in range(num_pairs * 2):
+                    state = torch.fmod(a * state + c, m)
+                    uniforms.append(state.float() / m.float())
+
+                # Convert to tensor
+                u = torch.stack(uniforms)
+
+                # Box-Muller transform to get normal distribution
+                # Split into pairs for Box-Muller
+                u1 = u[0::2]  # First half of pairs
+                u2 = u[1::2]  # Second half of pairs
+
+                # Box-Muller produces TWO independent normal values from each pair
+                r = torch.sqrt(-2.0 * torch.log(u1 + 1e-10))
+                theta = 2.0 * 3.14159265359 * u2
+                z1 = r * torch.cos(theta)  # First output
+                z2 = r * torch.sin(theta)  # Second output
+
+                # Interleave z1 and z2 to get [z1[0], z2[0], z1[1], z2[1], ...]
+                z = torch.stack([z1, z2], dim=1).flatten()
+
+                # Return exactly dim values
+                return z[:dim].unsqueeze(0)
+
             def forward(self, fft_magnitude: torch.Tensor, seed_x: torch.Tensor, seed_y: torch.Tensor, use_seed: torch.Tensor):
                 """
                 Args:
@@ -144,10 +189,6 @@ class TorchScriptStyleGAN2Wrapper:
                 Returns:
                     Generated image [batch, 3, H, W]
                 """
-                # Convert tensors to Python scalars
-                seed_x_val = float(seed_x.item())
-                seed_y_val = float(seed_y.item())
-                use_seed_val = bool(use_seed.item())
                 # Ensure input is 2D: [batch, 512]
                 if fft_magnitude.dim() == 1:
                     fft_magnitude = fft_magnitude.unsqueeze(0)
@@ -155,37 +196,56 @@ class TorchScriptStyleGAN2Wrapper:
                 batch_size = fft_magnitude.shape[0]
                 device = fft_magnitude.device
 
-                # Generate latent from seeds or use base_latent
-                if use_seed_val and self.has_mapping:
-                    # Bilinear interpolation between 4 corner seeds (matching Python GUI)
-                    w0_seeds = []
-                    for ofs_x, ofs_y in [[0, 0], [1, 0], [0, 1], [1, 1]]:
-                        seed_x_int = int(torch.floor(torch.tensor(seed_x_val))) + ofs_x
-                        seed_y_int = int(torch.floor(torch.tensor(seed_y_val))) + ofs_y
-                        seed = (seed_x_int + seed_y_int * self.step_y) & ((1 << 31) - 1)
-                        weight = (1 - abs(seed_x_val - seed_x_int)) * (1 - abs(seed_y_val - seed_y_int))
-                        if weight > 0:
-                            w0_seeds.append([seed, weight])
+                # Generate latent from seeds using bilinear interpolation (fully tensorized)
+                # Compute integer coordinates for 4 corners
+                seed_x_floor = torch.floor(seed_x)
+                seed_y_floor = torch.floor(seed_y)
 
-                    # Generate Z vectors from seeds
-                    all_ws = []
-                    for seed, weight in w0_seeds:
-                        # Generate Z from seed (deterministic)
-                        torch.manual_seed(seed)
-                        z = torch.randn(1, self.z_dim, device=device)
-                        c = torch.zeros(1, self.c_dim, device=device)
+                # Fractional parts for interpolation weights
+                fx = seed_x - seed_x_floor
+                fy = seed_y - seed_y_floor
 
-                        # Pass through mapping network with truncation
-                        with torch.no_grad():
-                            w = self.mapping(z, c, truncation_psi=0.7)
-                        all_ws.append(w * weight)
+                # Compute seeds for 4 corners (always compute all 4, no conditionals)
+                # Corner offsets: (0,0), (1,0), (0,1), (1,1)
+                corner_seeds = []
+                corner_weights = []
 
-                    # Interpolate W vectors
-                    latent = torch.stack(all_ws).sum(dim=0)  # [1, num_ws, w_dim]
-                    latent = latent.repeat(batch_size, 1, 1)  # [batch, num_ws, w_dim]
-                else:
-                    # Use base_latent (fallback)
-                    latent = self.base_latent.repeat(batch_size, 1, 1)  # [batch, num_ws, w_dim]
+                for ofs_x, ofs_y in [[0, 0], [1, 0], [0, 1], [1, 1]]:
+                    # Integer seed coordinates (keep as tensors)
+                    seed_x_int = (seed_x_floor + ofs_x).int()
+                    seed_y_int = (seed_y_floor + ofs_y).int()
+
+                    # Compute seed as tensor (mask to 31 bits for safety)
+                    seed_val = (seed_x_int + seed_y_int * self.step_y) & ((1 << 31) - 1)
+                    corner_seeds.append(seed_val)  # Keep as tensor
+
+                    # Bilinear weight (tensor operation)
+                    if ofs_x == 0 and ofs_y == 0:
+                        weight = (1.0 - fx) * (1.0 - fy)
+                    elif ofs_x == 1 and ofs_y == 0:
+                        weight = fx * (1.0 - fy)
+                    elif ofs_x == 0 and ofs_y == 1:
+                        weight = (1.0 - fx) * fy
+                    else:  # ofs_x == 1 and ofs_y == 1
+                        weight = fx * fy
+
+                    corner_weights.append(weight)
+
+                # Generate Z vectors from seeds and interpolate (always execute, no conditionals)
+                all_ws = []
+                for seed_tensor, weight in zip(corner_seeds, corner_weights):
+                    # Generate Z deterministically from seed tensor (pure PyTorch ops)
+                    z = self._deterministic_randn_from_seed(seed_tensor, self.z_dim, device)
+                    c = torch.zeros(1, self.c_dim, device=device)
+
+                    # Pass through mapping network with truncation
+                    with torch.no_grad():
+                        w = self.mapping(z, c, truncation_psi=0.7)
+                    all_ws.append(w * weight)
+
+                # Interpolate W vectors
+                latent = torch.stack(all_ws).sum(dim=0)  # [1, num_ws, w_dim]
+                latent = latent.repeat(batch_size, 1, 1)  # [batch, num_ws, w_dim]
 
                 # Take first 256 FFT bins (to match w_dim modulation)
                 fft_features = fft_magnitude[:, :256]
@@ -354,15 +414,15 @@ class TorchScriptStyleGAN2Wrapper:
 
         try:
 
-            # Trace the model
-            print("   🔍 Tracing model execution...")
+            # Trace the model with deterministic RNG
+            print("   🔍 Tracing model execution (with deterministic RNG)...")
             with torch.no_grad():
-                # Set model to eval and disable any randomness
+                # Set model to eval
                 self.model.eval()
                 traced_model = torch.jit.trace(
                     self.model,
                     example_input,
-                    check_trace=False  # Disable strict checking due to StyleGAN2's dynamic ops
+                    check_trace=False
                 )
 
             # Save traced model
@@ -376,6 +436,7 @@ class TorchScriptStyleGAN2Wrapper:
                 print(f"\n✅ TorchScript export SUCCESS!")
                 print(f"   File: {output_path}")
                 print(f"   Size: {size_mb:.2f} MB")
+                print(f"   Method: torch.jit.trace with custom deterministic RNG (LCG + Box-Muller)")
                 return output_path
             else:
                 raise RuntimeError(f"File not created: {output_path}")

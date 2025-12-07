@@ -46,10 +46,6 @@ public:
 private:
     // Find and cache noise_strength parameters from model
     void findNoiseStrengthParameters();
-    // Find and cache base_latent buffer from model
-    void findBaseLatentBuffer();
-    // Update base_latent from seed coordinates
-    void updateLatentFromSeed();
     // Inference thread
     void inferenceThreadLoop();
     void runInference();
@@ -65,11 +61,9 @@ private:
     std::vector<torch::Tensor> noiseStrengthParams;
 
     // Latent control state
-    torch::Tensor baseLatentBuffer;  // Cached base_latent buffer from model
     atomic<float> latentX{0.0f};
     atomic<float> latentY{0.0f};
     atomic<float> latentSpeed{0.25f};
-    int latentStepY = 100;  // Step size for Y coordinate (matches Python version)
     std::chrono::steady_clock::time_point lastLatentUpdate;
 
     // Audio thread data

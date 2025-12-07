@@ -69,11 +69,11 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     speedSlider.setRange(-5.0, 5.0, 0.01);
     speedSlider.setValue(0.25);
     speedSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 80, 20);
-    speedSlider.setSkewFactorFromMidPoint(1.0);  // Cubic-like scaling around midpoint
+    speedSlider.setSkewFactorFromMidPoint(1.0);
     speedSlider.onValueChange = [this]() {
         processorRef.renderer.setLatentSpeed(static_cast<float>(speedSlider.getValue()));
     };
-    speedSlider.setEnabled(false);  // Disabled until model is loaded
+    speedSlider.setEnabled(false);
     addAndMakeVisible(speedSlider);
 
     speedLabel.setText("Latent Speed", juce::dontSendNotification);
@@ -126,7 +126,6 @@ void AudioPluginAudioProcessorEditor::resized()
                                     .translated(-sliderWidth/2 - sliderSpacing/2, 0);
     noiseSlider.setBounds(noiseSliderArea);
 
-    // Noise label above noise slider
     int labelWidth = 150;
     auto noiseLabelArea = rightHalf.withSizeKeepingCentre(labelWidth, 30)
                                    .translated(-sliderWidth/2 - sliderSpacing/2, -sliderHeight/2 - 50);
@@ -137,7 +136,6 @@ void AudioPluginAudioProcessorEditor::resized()
                                     .translated(sliderWidth/2 + sliderSpacing/2, 0);
     speedSlider.setBounds(speedSliderArea);
 
-    // Speed label above speed slider
     auto speedLabelArea = rightHalf.withSizeKeepingCentre(labelWidth, 30)
                                    .translated(sliderWidth/2 + sliderSpacing/2, -sliderHeight/2 - 50);
     speedLabel.setBounds(speedLabelArea);
