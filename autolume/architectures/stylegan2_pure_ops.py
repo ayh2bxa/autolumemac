@@ -74,6 +74,9 @@ def _conv2d_resample_pure(x, w, f=None, up=1, down=1, padding=0, groups=1, flip_
     # Downsampling only (conv2d_resample.py lines 106-109)
     if down > 1 and up == 1:
         x = upfirdn2d(x, f, padding=[px0, px1, py0, py1], flip_filter=False)
+        # Flip weight if needed (wrapper flips when flip_weight=False)
+        if not flip_weight and (kw > 1 or kh > 1):
+            w = w.flip([2, 3])
         x = F.conv2d(x, w, stride=down, groups=groups)
         return x
 
@@ -95,6 +98,12 @@ def _conv2d_resample_pure(x, w, f=None, up=1, down=1, padding=0, groups=1, flip_
         pxt = max(min(-px0, -px1), 0)
         pyt = max(min(-py0, -py1), 0)
 
+        # Flip weight if needed (for transposed conv)
+        # CUDA: flip_weight=True → passes (not True) → wrapper flips → we flip
+        # CUDA: flip_weight=False → passes (not False) → wrapper doesn't flip → we don't flip
+        if flip_weight and (kw > 1 or kh > 1):
+            w = w.flip([2, 3])
+
         # Transposed convolution
         x = F.conv_transpose2d(x, w, stride=up, padding=[pyt, pxt], groups=groups)
 
@@ -110,9 +119,14 @@ def _conv2d_resample_pure(x, w, f=None, up=1, down=1, padding=0, groups=1, flip_
     # No resampling (conv2d_resample.py lines 132-134)
     if up == 1 and down == 1:
         if px0 == px1 and py0 == py1 and px0 >= 0 and py0 >= 0:
+            # Flip weight if needed
+            if not flip_weight and (kw > 1 or kh > 1):
+                w = w.flip([2, 3])
             return F.conv2d(x, w, padding=[py0, px0], groups=groups)
 
     # Fallback: shouldn't reach here for StyleGAN2
+    if not flip_weight and (kw > 1 or kh > 1):
+        w = w.flip([2, 3])
     x = F.conv2d(x, w, padding=padding, groups=groups)
     return x
 
@@ -240,15 +254,19 @@ def setup_filter(f, device=torch.device('cpu'), normalize=True, flip_filter=Fals
     Setup a 2D FIR filter for upfirdn2d.
     Compatible with original upfirdn2d.setup_filter.
     """
+    # Handle None -> identity filter (matches CUDA behavior)
     if f is None:
-        return None
+        f = 1
 
     # Convert to tensor if needed
     if not isinstance(f, torch.Tensor):
-        f = torch.tensor(f, dtype=torch.float32)
+        f = torch.as_tensor(f, dtype=torch.float32)
 
-    # Ensure it's 1D or 2D
-    assert f.ndim in [1, 2]
+    # Handle scalar
+    assert f.ndim in [0, 1, 2]
+    assert f.numel() > 0
+    if f.ndim == 0:
+        f = f.unsqueeze(0)
 
     # Make 2D if 1D (outer product)
     if f.ndim == 1:
@@ -287,14 +305,20 @@ def upfirdn2d(x, f, up=1, down=1, padding=0, flip_filter=False, gain=1):
     else:
         downx, downy = down
 
-    # Handle filter
+    # Parse padding
+    if isinstance(padding, int):
+        padx0 = padx1 = pady0 = pady1 = padding
+    elif len(padding) == 2:
+        padx0 = padx1 = padding[0]
+        pady0 = pady1 = padding[1]
+    elif len(padding) == 4:
+        padx0, padx1, pady0, pady1 = padding
+    else:
+        padx0 = padx1 = pady0 = pady1 = 0
+
+    # Handle None filter - convert to identity (matches CUDA behavior)
     if f is None:
-        # No filtering, just up/downsample
-        if upx > 1 or upy > 1:
-            x = F.interpolate(x, scale_factor=(upy, upx), mode='nearest')
-        if downx > 1 or downy > 1:
-            x = x[:, :, ::downy, ::downx]
-        return x * gain
+        f = torch.ones([1, 1], dtype=torch.float32, device=x.device)
 
     # Ensure filter is 2D
     if f.ndim == 1:
@@ -320,17 +344,6 @@ def upfirdn2d(x, f, up=1, down=1, padding=0, flip_filter=False, gain=1):
         x = F.pad(x, [0, upx - 1, 0, 0, 0, upy - 1])
         # Reshape back to 4D
         x = x.reshape([batch, channels, height * upy, width * upx])
-
-    # Parse padding (like reference implementation)
-    if isinstance(padding, int):
-        padx0 = padx1 = pady0 = pady1 = padding
-    elif len(padding) == 2:
-        padx0 = padx1 = padding[0]
-        pady0 = pady1 = padding[1]
-    elif len(padding) == 4:
-        padx0, padx1, pady0, pady1 = padding
-    else:
-        padx0 = padx1 = pady0 = pady1 = 0
 
     # Pad or crop (like reference lines 200-201)
     x = F.pad(x, [max(padx0, 0), max(padx1, 0), max(pady0, 0), max(pady1, 0)])

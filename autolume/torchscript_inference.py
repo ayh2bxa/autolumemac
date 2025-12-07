@@ -145,7 +145,7 @@ class TorchScriptStyleGAN2Wrapper:
                 fft_features = fft_features / (fft_features.max(dim=1, keepdim=True)[0] + 1e-8)
 
                 # Scale down to avoid too much deviation from base latent
-                fft_features = (fft_features - 0.5) * 0.3  # Range: [-0.15, 0.15]
+                # fft_features = (fft_features - 0.5) * 0.3  # Range: [-0.15, 0.15]
 
                 # Modulate base latent with FFT features
                 # base_latent: [1, num_ws, w_dim]
