@@ -93,6 +93,7 @@ class TorchScriptStyleGAN2Wrapper:
     def _create_audio_to_image_model(self, synthesis, generator=None) -> nn.Module:
         """
         Create AudioToImageModel wrapper that converts FFT magnitude to images.
+        Supports optional seed-based latent generation via mapping network.
         Used by both fresh and pretrained model loading.
         """
         class AudioToImageModel(nn.Module):
@@ -105,17 +106,23 @@ class TorchScriptStyleGAN2Wrapper:
                 # Get device from synthesis network
                 device = next(synthesis.parameters()).device
 
-                # Generate base latent
+                # Store generator dimensions and mapping network if available
                 if generator is not None:
-                    # Use mapping network to generate a good base latent
-                    # Move mapping to device first
                     self.mapping = generator.mapping.to(device)
+                    self.z_dim = generator.z_dim
+                    self.c_dim = generator.c_dim
+                    self.has_mapping = True
+
+                    # Generate base latent for fallback
                     with torch.no_grad():
                         z = torch.randn(1, generator.z_dim, device=device)
                         c = torch.zeros(1, generator.c_dim, device=device)
                         base_w = self.mapping(z, c, truncation_psi=0.7)
-                    print("      Using mapping network for base latent (better quality)")
+                    print("      Mapping network included for seed-based generation")
                 else:
+                    self.has_mapping = False
+                    self.z_dim = 512
+                    self.c_dim = 0
                     # Fall back to random initialization
                     base_w = torch.randn(1, synthesis.num_ws, synthesis.w_dim, device=device)
                     print("      Using random base latent (generator not provided)")
@@ -123,34 +130,68 @@ class TorchScriptStyleGAN2Wrapper:
                 # Register base latent as buffer (will be part of model state)
                 self.register_buffer('base_latent', base_w)
 
-            def forward(self, fft_magnitude):
+                # Store step_y for seed calculation (matching Python GUI)
+                self.step_y = 100
+
+            def forward(self, fft_magnitude: torch.Tensor, seed_x: torch.Tensor, seed_y: torch.Tensor, use_seed: torch.Tensor):
                 """
                 Args:
                     fft_magnitude: Pre-computed FFT magnitude [batch, 512] or [512]
-                                   (computed on CPU in C++ code)
+                    seed_x: X coordinate tensor (scalar) for seed-based generation
+                    seed_y: Y coordinate tensor (scalar) for seed-based generation
+                    use_seed: Boolean tensor (scalar) - if True, generate latent from seeds
 
                 Returns:
                     Generated image [batch, 3, H, W]
                 """
+                # Convert tensors to Python scalars
+                seed_x_val = float(seed_x.item())
+                seed_y_val = float(seed_y.item())
+                use_seed_val = bool(use_seed.item())
                 # Ensure input is 2D: [batch, 512]
                 if fft_magnitude.dim() == 1:
                     fft_magnitude = fft_magnitude.unsqueeze(0)
 
                 batch_size = fft_magnitude.shape[0]
+                device = fft_magnitude.device
+
+                # Generate latent from seeds or use base_latent
+                if use_seed_val and self.has_mapping:
+                    # Bilinear interpolation between 4 corner seeds (matching Python GUI)
+                    w0_seeds = []
+                    for ofs_x, ofs_y in [[0, 0], [1, 0], [0, 1], [1, 1]]:
+                        seed_x_int = int(torch.floor(torch.tensor(seed_x_val))) + ofs_x
+                        seed_y_int = int(torch.floor(torch.tensor(seed_y_val))) + ofs_y
+                        seed = (seed_x_int + seed_y_int * self.step_y) & ((1 << 31) - 1)
+                        weight = (1 - abs(seed_x_val - seed_x_int)) * (1 - abs(seed_y_val - seed_y_int))
+                        if weight > 0:
+                            w0_seeds.append([seed, weight])
+
+                    # Generate Z vectors from seeds
+                    all_ws = []
+                    for seed, weight in w0_seeds:
+                        # Generate Z from seed (deterministic)
+                        torch.manual_seed(seed)
+                        z = torch.randn(1, self.z_dim, device=device)
+                        c = torch.zeros(1, self.c_dim, device=device)
+
+                        # Pass through mapping network with truncation
+                        with torch.no_grad():
+                            w = self.mapping(z, c, truncation_psi=0.7)
+                        all_ws.append(w * weight)
+
+                    # Interpolate W vectors
+                    latent = torch.stack(all_ws).sum(dim=0)  # [1, num_ws, w_dim]
+                    latent = latent.repeat(batch_size, 1, 1)  # [batch, num_ws, w_dim]
+                else:
+                    # Use base_latent (fallback)
+                    latent = self.base_latent.repeat(batch_size, 1, 1)  # [batch, num_ws, w_dim]
 
                 # Take first 256 FFT bins (to match w_dim modulation)
                 fft_features = fft_magnitude[:, :256]
 
                 # Normalize FFT features to reasonable range (0-1)
                 fft_features = fft_features / (fft_features.max(dim=1, keepdim=True)[0] + 1e-8)
-
-                # Scale down to avoid too much deviation from base latent
-                # fft_features = (fft_features - 0.5) * 0.3  # Range: [-0.15, 0.15]
-
-                # Modulate base latent with FFT features
-                # base_latent: [1, num_ws, w_dim]
-                # fft_features: [batch, 256]
-                latent = self.base_latent.repeat(batch_size, 1, 1)  # [batch, num_ws, w_dim]
 
                 # Apply FFT modulation to first 256 dimensions across all layers
                 fft_mod = fft_features.unsqueeze(1)  # [batch, 1, 256]
@@ -300,11 +341,15 @@ class TorchScriptStyleGAN2Wrapper:
 
         # Create example input if not provided
         if example_input is None:
-            # Model expects pre-computed FFT magnitude [batch, 512]
+            # Model expects pre-computed FFT magnitude [batch, 512] + seed parameters
             # Use deterministic input for better trace verification
             torch.manual_seed(42)
-            example_input = torch.randn(1, 512, device=self.device)
-            print(f"   Example input shape: {list(example_input.shape)} (batch, fft_bins)")
+            example_fft = torch.randn(1, 512, device=self.device)
+            example_seed_x = torch.tensor(0.0, device=self.device)
+            example_seed_y = torch.tensor(0.0, device=self.device)
+            example_use_seed = torch.tensor(True, device=self.device)
+            example_input = (example_fft, example_seed_x, example_seed_y, example_use_seed)
+            print(f"   Example input shape: {list(example_fft.shape)} (batch, fft_bins) + seed params")
             print(f"   FFT bins: 512 (computed from audio on CPU)")
 
         try:
@@ -370,13 +415,16 @@ class TorchScriptStyleGAN2Wrapper:
                 print(f"   Moving model to {self.device}...")
                 loaded_model = loaded_model.to(self.device)
 
-            # Verify it works with FFT magnitude input
+            # Verify it works with FFT magnitude input + seed params
             with torch.no_grad():
-                test_input = torch.randn(1, num_audio_samples, device=self.device)
-                test_output = loaded_model(test_input)
+                test_fft = torch.randn(1, num_audio_samples, device=self.device)
+                test_seed_x = torch.tensor(0.0, device=self.device)
+                test_seed_y = torch.tensor(0.0, device=self.device)
+                test_use_seed = torch.tensor(False, device=self.device)
+                test_output = loaded_model(test_fft, test_seed_x, test_seed_y, test_use_seed)
 
             print(f"✅ TorchScript model loaded successfully!")
-            print(f"   Input shape: {list(test_input.shape)} (batch, num_audio_samples)")
+            print(f"   Input shape: {list(test_fft.shape)} (batch, num_audio_samples) + seed params")
             print(f"   Output shape: {list(test_output.shape)}")
 
             return loaded_model
@@ -408,8 +456,11 @@ class TorchScriptStyleGAN2Wrapper:
             audio_samples = audio_samples.unsqueeze(0)
 
         with torch.no_grad():
-            # Generate image from audio samples
-            img_tensor = model(audio_samples)
+            # Generate image from audio samples (use base_latent, not seeds)
+            seed_x = torch.tensor(0.0, device=audio_samples.device)
+            seed_y = torch.tensor(0.0, device=audio_samples.device)
+            use_seed = torch.tensor(False, device=audio_samples.device)
+            img_tensor = model(audio_samples, seed_x, seed_y, use_seed)
 
             # Handle tuple output (some StyleGAN2 variants return (img, features))
             if isinstance(img_tensor, (tuple, list)):
