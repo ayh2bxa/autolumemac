@@ -39,9 +39,17 @@ public:
     void setNoiseStrength(float value);
     float getNoiseStrength() const;
 
+    // Latent control (called from GUI thread)
+    void setLatentSpeed(float value);
+    float getLatentSpeed() const;
+
 private:
     // Find and cache noise_strength parameters from model
     void findNoiseStrengthParameters();
+    // Find and cache base_latent buffer from model
+    void findBaseLatentBuffer();
+    // Update base_latent from seed coordinates
+    void updateLatentFromSeed();
     // Inference thread
     void inferenceThreadLoop();
     void runInference();
@@ -55,6 +63,14 @@ private:
 
     // Noise strength parameters (cached for real-time control)
     std::vector<torch::Tensor> noiseStrengthParams;
+
+    // Latent control state
+    torch::Tensor baseLatentBuffer;  // Cached base_latent buffer from model
+    atomic<float> latentX{0.0f};
+    atomic<float> latentY{0.0f};
+    atomic<float> latentSpeed{0.25f};
+    int latentStepY = 100;  // Step size for Y coordinate (matches Python version)
+    std::chrono::steady_clock::time_point lastLatentUpdate;
 
     // Audio thread data
     array<float, Constants::max_buf_size> in_buf;

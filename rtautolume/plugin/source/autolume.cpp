@@ -16,6 +16,9 @@ Autolume::Autolume() {
     fftSplit.realp = fftReal.data();
     fftSplit.imagp = fftImag.data();
 
+    // Initialize latent update timestamp
+    lastLatentUpdate = std::chrono::steady_clock::now();
+
     std::cout << "Autolume: FFT setup initialized (log2n=" << fftLog2n << ")" << std::endl;
 }
 
@@ -51,6 +54,9 @@ bool Autolume::loadModel(const std::string& path) {
 
         // Find and cache noise_strength parameters
         findNoiseStrengthParameters();
+
+        // Find and cache base_latent buffer
+        findBaseLatentBuffer();
 
         std::cout << "Autolume: Model loaded successfully" << std::endl;
 
@@ -187,6 +193,19 @@ void Autolume::runInference() {
     inferenceRunning.store(true, std::memory_order_release);
 
     try {
+        // Update latent coordinates based on time delta and speed (animation always on)
+        auto now = std::chrono::steady_clock::now();
+        float delta = std::chrono::duration<float>(now - lastLatentUpdate).count();
+        lastLatentUpdate = now;
+
+        float speed = latentSpeed.load(std::memory_order_acquire);
+        float x = latentX.load(std::memory_order_acquire);
+        x += std::abs(delta) * speed;
+        latentX.store(x, std::memory_order_release);
+
+        // Update base_latent from current seed coordinates
+        updateLatentFromSeed();
+
         // Copy input if available (lock-free read from audio thread)
         std::array<float, Constants::nfft> audio_samples;
         if (inputReady.load(std::memory_order_acquire)) {
@@ -316,4 +335,49 @@ float Autolume::getNoiseStrength() const {
     }
 
     return noiseStrengthParams[0].item<float>();
+}
+
+void Autolume::findBaseLatentBuffer() {
+    // Find the base_latent buffer in the model
+    for (const auto& buffer : model.named_buffers()) {
+        if (buffer.name.find("base_latent") != std::string::npos) {
+            baseLatentBuffer = buffer.value;
+            std::cout << "Autolume: Found base_latent buffer: " << buffer.name
+                      << " shape: [" << baseLatentBuffer.size(0) << ", "
+                      << baseLatentBuffer.size(1) << ", "
+                      << baseLatentBuffer.size(2) << "]" << std::endl;
+            return;
+        }
+    }
+    std::cout << "Autolume: Warning - base_latent buffer not found in model" << std::endl;
+}
+
+void Autolume::updateLatentFromSeed() {
+    // Don't update if base_latent buffer wasn't found
+    if (!baseLatentBuffer.defined()) {
+        return;
+    }
+
+    // Convert (x, y) coordinates to a seed value (like Python version)
+    float x = latentX.load(std::memory_order_acquire);
+    float y = latentY.load(std::memory_order_acquire);
+    int seed = static_cast<int>(std::round(x)) + static_cast<int>(std::round(y)) * latentStepY;
+
+    // Generate latent from seed
+    torch::NoGradGuard no_grad;
+    torch::manual_seed(seed);
+
+    // Generate new latent with same shape as base_latent
+    auto new_latent = torch::randn_like(baseLatentBuffer);
+
+    // Update the base_latent buffer
+    baseLatentBuffer.copy_(new_latent);
+}
+
+void Autolume::setLatentSpeed(float value) {
+    latentSpeed.store(value, std::memory_order_release);
+}
+
+float Autolume::getLatentSpeed() const {
+    return latentSpeed.load(std::memory_order_acquire);
 }

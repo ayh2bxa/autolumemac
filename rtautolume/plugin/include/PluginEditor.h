@@ -32,5 +32,9 @@ private:
     juce::Slider noiseSlider;
     juce::Label noiseLabel;
 
+    // Latent speed control
+    juce::Slider speedSlider;
+    juce::Label speedLabel;
+
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (AudioPluginAudioProcessorEditor)
 };

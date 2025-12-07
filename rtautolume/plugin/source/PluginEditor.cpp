@@ -32,9 +32,11 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
                 if (success) {
                     modelPathLabel.setText(file.getFileName(), juce::dontSendNotification);
                     noiseSlider.setEnabled(true);
+                    speedSlider.setEnabled(true);
                 } else {
                     modelPathLabel.setText("Failed to load model", juce::dontSendNotification);
                     noiseSlider.setEnabled(false);
+                    speedSlider.setEnabled(false);
                 }
             }
         });
@@ -61,6 +63,22 @@ AudioPluginAudioProcessorEditor::AudioPluginAudioProcessorEditor (AudioPluginAud
     noiseLabel.setText("Noise Strength", juce::dontSendNotification);
     noiseLabel.setJustificationType(juce::Justification::centred);
     addAndMakeVisible(noiseLabel);
+
+    // Setup latent speed slider
+    speedSlider.setSliderStyle(juce::Slider::LinearVertical);
+    speedSlider.setRange(-5.0, 5.0, 0.01);
+    speedSlider.setValue(0.25);
+    speedSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 80, 20);
+    speedSlider.setSkewFactorFromMidPoint(1.0);  // Cubic-like scaling around midpoint
+    speedSlider.onValueChange = [this]() {
+        processorRef.renderer.setLatentSpeed(static_cast<float>(speedSlider.getValue()));
+    };
+    speedSlider.setEnabled(false);  // Disabled until model is loaded
+    addAndMakeVisible(speedSlider);
+
+    speedLabel.setText("Latent Speed", juce::dontSendNotification);
+    speedLabel.setJustificationType(juce::Justification::centred);
+    addAndMakeVisible(speedLabel);
 }
 
 AudioPluginAudioProcessorEditor::~AudioPluginAudioProcessorEditor()
@@ -98,17 +116,31 @@ void AudioPluginAudioProcessorEditor::resized()
     auto modelLabelArea = topArea.removeFromTop(30);
     modelPathLabel.setBounds(modelLabelArea);
 
-    // Center the slider vertically in the remaining space
+    // Position sliders side by side
     int sliderWidth = 60;
     int sliderHeight = 300;
+    int sliderSpacing = 40;
 
-    auto sliderArea = rightHalf.withSizeKeepingCentre(sliderWidth, sliderHeight);
-    noiseSlider.setBounds(sliderArea);
+    // Noise slider on the left
+    auto noiseSliderArea = rightHalf.withSizeKeepingCentre(sliderWidth, sliderHeight)
+                                    .translated(-sliderWidth/2 - sliderSpacing/2, 0);
+    noiseSlider.setBounds(noiseSliderArea);
 
-    // Label above the slider - make it wider than slider to show full "Noise Strength" text
+    // Noise label above noise slider
     int labelWidth = 150;
-    auto labelArea = rightHalf.withSizeKeepingCentre(labelWidth, 30).translated(0, -sliderHeight/2 - 50);
-    noiseLabel.setBounds(labelArea);
+    auto noiseLabelArea = rightHalf.withSizeKeepingCentre(labelWidth, 30)
+                                   .translated(-sliderWidth/2 - sliderSpacing/2, -sliderHeight/2 - 50);
+    noiseLabel.setBounds(noiseLabelArea);
+
+    // Speed slider on the right
+    auto speedSliderArea = rightHalf.withSizeKeepingCentre(sliderWidth, sliderHeight)
+                                    .translated(sliderWidth/2 + sliderSpacing/2, 0);
+    speedSlider.setBounds(speedSliderArea);
+
+    // Speed label above speed slider
+    auto speedLabelArea = rightHalf.withSizeKeepingCentre(labelWidth, 30)
+                                   .translated(sliderWidth/2 + sliderSpacing/2, -sliderHeight/2 - 50);
+    speedLabel.setBounds(speedLabelArea);
 }
 
 void AudioPluginAudioProcessorEditor::timerCallback()
