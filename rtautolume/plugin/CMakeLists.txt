@@ -5,14 +5,27 @@ set(CMAKE_PREFIX_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libs/libtorch")
 find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
+# Set platform-specific plugin formats and copy directories
+if(APPLE)
+    set(PLUGIN_FORMATS AU VST3 Standalone)
+    set(VST3_COPY_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/VST3")
+    set(AU_COPY_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/Components")
+elseif(WIN32)
+    set(PLUGIN_FORMATS VST3 Standalone)
+    set(VST3_COPY_DIR "$ENV{COMMONPROGRAMFILES}/VST3")
+else() # Linux
+    set(PLUGIN_FORMATS VST3 Standalone)
+    set(VST3_COPY_DIR "$ENV{HOME}/.vst3")
+endif()
+
 juce_add_plugin(${PROJECT_NAME}
     COMPANY_NAME "projectfmusic"
-    FORMATS AU VST3 Standalone
-    PRODUCT_NAME "AutolumeMac"
+    FORMATS ${PLUGIN_FORMATS}
+    PRODUCT_NAME "AutolumeJUCE"
     MICROPHONE_PERMISSION_ENABLED TRUE
     COPY_PLUGIN_AFTER_BUILD TRUE
-    VST3_COPY_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/VST3"
-    AU_COPY_DIR "$ENV{HOME}/Library/Audio/Plug-Ins/Components"
+    VST3_COPY_DIR ${VST3_COPY_DIR}
+    $<$<PLATFORM_ID:Darwin>:AU_COPY_DIR ${AU_COPY_DIR}>
 )
 
 file(GLOB_RECURSE SRC "source/*.cpp")
@@ -48,14 +61,21 @@ target_link_libraries(${PROJECT_NAME}
         juce::juce_gui_basics
         juce::juce_gui_extra
         ${TORCH_LIBRARIES}
-        "-framework Accelerate"
-        "-framework SystemConfiguration"
-        "-framework CoreFoundation"
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags
 )
+
+# Link macOS-specific frameworks
+if(APPLE)
+    target_link_libraries(${PROJECT_NAME}
+        PRIVATE
+            "-framework Accelerate"
+            "-framework SystemConfiguration"
+            "-framework CoreFoundation"
+    )
+endif()
 
 target_compile_definitions(${PROJECT_NAME}
     PUBLIC

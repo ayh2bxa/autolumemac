@@ -113,21 +113,58 @@ void Autolume::processAudio(float val) {
 void Autolume::inferenceThreadLoop() {
     using namespace std::chrono;
 
-    // Initialize MPS directly on this dedicated thread (like autolumelive's approach)
+    // Initialize best available device on this dedicated thread
     try {
-        std::cout << "Autolume: Initializing MPS on inference thread..." << std::endl;
-        device = torch::Device(torch::kMPS);
+        std::cout << "Autolume: Detecting available devices..." << std::endl;
 
-        std::cout << "Autolume: Moving model to MPS..." << std::endl;
+        // Try devices in order of preference: CUDA -> MPS -> CPU
+        bool deviceInitialized = false;
+        std::string deviceName;
+
+        // Try CUDA first
+        if (torch::cuda::is_available()) {
+            try {
+                std::cout << "Autolume: CUDA detected, initializing..." << std::endl;
+                device = torch::Device(torch::kCUDA);
+                deviceName = "CUDA";
+                deviceInitialized = true;
+            } catch (const std::exception& e) {
+                std::cerr << "Autolume: CUDA initialization failed: " << e.what() << std::endl;
+            }
+        }
+
+        // Try MPS if CUDA failed or unavailable
+        if (!deviceInitialized && torch::mps::is_available()) {
+            try {
+                std::cout << "Autolume: MPS detected, initializing..." << std::endl;
+                device = torch::Device(torch::kMPS);
+                deviceName = "MPS";
+                deviceInitialized = true;
+            } catch (const std::exception& e) {
+                std::cerr << "Autolume: MPS initialization failed: " << e.what() << std::endl;
+            }
+        }
+
+        // Fall back to CPU
+        if (!deviceInitialized) {
+            std::cout << "Autolume: Falling back to CPU..." << std::endl;
+            device = torch::Device(torch::kCPU);
+            deviceName = "CPU";
+            deviceInitialized = true;
+        }
+
+        std::cout << "Autolume: Using device: " << deviceName << std::endl;
+
+        std::cout << "Autolume: Moving model to " << deviceName << "..." << std::endl;
         model.to(device);
 
-        std::cout << "Autolume: Moving tensor to MPS..." << std::endl;
+        std::cout << "Autolume: Moving tensor to " << deviceName << "..." << std::endl;
         inputTensor = inputTensor.to(device, false, false);
         inputs.clear();
         inputs.emplace_back(inputTensor);
 
         mpsInitialized.store(true, std::memory_order_release);
-        std::cout << "Autolume: MPS initialization complete!" << std::endl;
+        std::cout << "Autolume: Device initialization complete on " << deviceName << "!" << std::endl;
 
         // Test forward pass immediately after initialization
         try {
@@ -143,7 +180,8 @@ void Autolume::inferenceThreadLoop() {
         }
     }
     catch (const std::exception& e) {
-        std::cerr << "Autolume: MPS initialization failed: " << e.what() << std::endl;
+        std::cerr << "Autolume: Device initialization failed: " << e.what() << std::endl;
+        std::cerr << "Autolume: Unable to initialize any device (CUDA/MPS/CPU). Exiting inference thread." << std::endl;
         mpsInitialized.store(true, std::memory_order_release);
         // Exit thread if initialization failed
         return;
@@ -237,13 +275,6 @@ void Autolume::runInference() {
         // Get current seed coordinates
         float seed_x = latentX.load(std::memory_order_acquire);
         float seed_y = latentY.load(std::memory_order_acquire);
-
-        // Debug logging (remove after testing)
-        static int frame_count = 0;
-        if (frame_count++ % 30 == 0) {  // Log every 30 frames
-            std::cout << "Latent: speed=" << speed << ", delta=" << delta
-                      << ", x=" << seed_x << ", y=" << seed_y << std::endl;
-        }
 
         // Run model inference with seed coordinates (pass as tensors)
         torch::NoGradGuard no_grad;
